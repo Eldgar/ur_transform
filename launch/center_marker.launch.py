@@ -7,9 +7,9 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
     moveit_config = MoveItConfigsBuilder("ur3e", package_name="starbot_moveit_config").to_moveit_configs()
 
-    initial_position_node = Node(
+    move_marker_node = Node(
         package="ur_transform",
-        executable="initial_position",
+        executable="center_marker",
         output="screen",
         parameters=[
             moveit_config.robot_description,
@@ -19,4 +19,4 @@ def generate_launch_description():
         ],
     )
 
-    return LaunchDescription([initial_position_node])
+    return LaunchDescription([move_marker_node])

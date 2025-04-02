@@ -4,7 +4,6 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
-#include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2/LinearMath/Transform.h>
@@ -12,6 +11,10 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
+#include <fstream>
+#include <map>
+#include <limits>
+#include <sstream>
 
 class ArucoDetector : public rclcpp::Node
 {
@@ -27,8 +30,6 @@ public:
             "/ur_transform", 10,
             std::bind(&ArucoDetector::transformCallback, this, std::placeholders::_1));
 
-        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
-
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -38,29 +39,41 @@ public:
         camera_matrix_ = (cv::Mat_<double>(3, 3) << 520.78138, 0.0, 320.5,
                                                     0.0, 520.78138, 240.5,
                                                     0.0, 0.0, 1.0);
-        // dist_coeffs_ = cv::Mat::zeros(5, 1, CV_64F);
-        dist_coeffs_ = (cv::Mat_<double>(5, 1) << -0.3, -0.3, 0.05, 0.0, -0.3);
-
         marker_length_ = 0.045;
 
+        csv_file_.open("/tmp/distortion_error_results.csv");
+        csv_file_ << "k1,k2,p1,p2,k3,TotalError\n";
+
+        timer_ = this->create_wall_timer(std::chrono::seconds(60), std::bind(&ArucoDetector::finalizeCalibration, this));
+
         RCLCPP_INFO(this->get_logger(), "ArucoDetector node initialized.");
+    }
+
+    ~ArucoDetector()
+    {
+        if (csv_file_.is_open())
+            csv_file_.close();
     }
 
 private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
     rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr transform_sub_;
-    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
     cv::Ptr<cv::aruco::Dictionary> aruco_dict_;
     cv::Ptr<cv::aruco::DetectorParameters> aruco_params_;
     cv::Mat camera_matrix_;
-    cv::Mat dist_coeffs_;
     double marker_length_;
+    std::ofstream csv_file_;
+    rclcpp::TimerBase::SharedPtr timer_;
 
-    geometry_msgs::msg::TransformStamped latest_marker_tf_;
     bool has_transform_ = false;
+    geometry_msgs::msg::TransformStamped latest_marker_tf_;
+
+    std::map<std::string, double> error_by_distortion_;
+    std::string best_distortion_key_;
+    double best_error_ = std::numeric_limits<double>::max();
 
     void transformCallback(const geometry_msgs::msg::TransformStamped::SharedPtr msg)
     {
@@ -80,14 +93,36 @@ private:
             return;
         }
 
+        for (double k1 = -0.3; k1 <= 0.3; k1 += 0.1)
+        for (double k2 = -0.3; k2 <= 0.3; k2 += 0.1)
+        for (double p1 = -0.05; p1 <= 0.05; p1 += 0.05)
+        for (double p2 = -0.05; p2 <= 0.05; p2 += 0.05)
+        for (double k3 = -0.3; k3 <= 0.3; k3 += 0.1)
+        {
+            cv::Mat dist_coeffs = (cv::Mat_<double>(5, 1) << k1, k2, p1, p2, k3);
+            std::stringstream key;
+            key << k1 << "," << k2 << "," << p1 << "," << p2 << "," << k3;
+
+            double error = evaluatePoseError(frame, dist_coeffs);
+            error_by_distortion_[key.str()] = error;
+
+            if (error < best_error_) {
+                best_error_ = error;
+                best_distortion_key_ = key.str();
+            }
+        }
+    }
+
+    double evaluatePoseError(const cv::Mat &frame, const cv::Mat &dist_coeffs)
+    {
         std::vector<int> ids;
         std::vector<std::vector<cv::Point2f>> corners;
         std::vector<cv::Vec3d> rvecs, tvecs;
 
         cv::aruco::detectMarkers(frame, aruco_dict_, corners, ids, aruco_params_);
-        if (ids.empty()) return;
+        if (ids.empty()) return std::numeric_limits<double>::max();
 
-        cv::aruco::estimatePoseSingleMarkers(corners, marker_length_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
+        cv::aruco::estimatePoseSingleMarkers(corners, marker_length_, camera_matrix_, dist_coeffs, rvecs, tvecs);
 
         cv::Mat R;
         cv::Rodrigues(rvecs[0], R);
@@ -118,36 +153,12 @@ private:
 
         Eigen::Matrix4d T_base_camera = T_base_marker * T_marker_camera;
 
-        Eigen::Vector3d t(T_base_camera.block<3, 1>(0, 3));
-        Eigen::Quaterniond quat(T_base_camera.block<3, 3>(0, 0));
-
-        geometry_msgs::msg::TransformStamped tf_msg;
-        tf_msg.header.stamp = this->get_clock()->now();
-        tf_msg.header.frame_id = "base_link";
-        tf_msg.child_frame_id = "camera_link";
-        tf_msg.transform.translation.x = t.x();
-        tf_msg.transform.translation.y = t.y();
-        tf_msg.transform.translation.z = t.z();
-        tf_msg.transform.rotation.x = quat.x();
-        tf_msg.transform.rotation.y = quat.y();
-        tf_msg.transform.rotation.z = quat.z();
-        tf_msg.transform.rotation.w = quat.w();
-
-        tf_broadcaster_->sendTransform(tf_msg);
-
-        compareCameraPoseError(T_base_camera);
-    }
-
-    void compareCameraPoseError(const Eigen::Matrix4d &T_base_camera)
-    {
         geometry_msgs::msg::TransformStamped tf_translation_ref, tf_orientation_ref;
-
         try {
             tf_translation_ref = tf_buffer_->lookupTransform("base_link", "wrist_rgbd_camera_link", tf2::TimePointZero);
             tf_orientation_ref = tf_buffer_->lookupTransform("base_link", "wrist_rgbd_camera_depth_optical_frame", tf2::TimePointZero);
         } catch (tf2::TransformException &ex) {
-            RCLCPP_WARN(this->get_logger(), "TF Lookup failed: %s", ex.what());
-            return;
+            return std::numeric_limits<double>::max();
         }
 
         Eigen::Vector3d t_est(T_base_camera.block<3, 1>(0, 3));
@@ -163,10 +174,20 @@ private:
 
         double translation_error = (t_est - t_ref).norm();
         double angle_error_rad = q_est.angularDistance(q_ref);
+        double total_error = translation_error + angle_error_rad * 0.1;
 
-        RCLCPP_INFO(this->get_logger(),
-            "Translation Error: %.4f m | Orientation Error: %.4f rad (%.2f deg)",
-            translation_error, angle_error_rad, angle_error_rad * 180.0 / M_PI);
+        return total_error;
+    }
+
+    void finalizeCalibration()
+    {
+        for (const auto &entry : error_by_distortion_) {
+            csv_file_ << entry.first << "," << entry.second << "\n";
+        }
+        csv_file_ << "Best," << best_distortion_key_ << "," << best_error_ << "\n";
+        RCLCPP_INFO(this->get_logger(), "Calibration complete. Best distortion = [%s] with error %.6f",
+                    best_distortion_key_.c_str(), best_error_);
+        rclcpp::shutdown();
     }
 };
 
@@ -178,7 +199,6 @@ int main(int argc, char *argv[])
     rclcpp::shutdown();
     return 0;
 }
-
 
 
 

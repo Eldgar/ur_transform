@@ -20,11 +20,6 @@ find_package(moveit_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_visual_tools REQUIRED)
 
-# Define executables
-add_executable(transform_printer src/transform_printer.cpp)
-ament_target_dependencies(transform_printer rclcpp tf2_ros geometry_msgs)
-install(TARGETS transform_printer DESTINATION lib/${PROJECT_NAME})
-
 add_executable(transform_publisher src/transform_publisher.cpp)
 ament_target_dependencies(transform_publisher rclcpp tf2_ros geometry_msgs)
 install(TARGETS transform_publisher DESTINATION lib/${PROJECT_NAME})
@@ -37,25 +32,13 @@ add_executable(real_aruco_transform_publisher src/real_aruco_transform_publisher
 ament_target_dependencies(real_aruco_transform_publisher rclcpp tf2_ros geometry_msgs)
 install(TARGETS real_aruco_transform_publisher DESTINATION lib/${PROJECT_NAME})
 
-add_executable(teleop_end_effector src/teleop_end_effector.cpp)
-ament_target_dependencies(teleop_end_effector rclcpp moveit_core moveit_ros_planning_interface)
-install(TARGETS teleop_end_effector DESTINATION lib/${PROJECT_NAME})
-
 add_executable(initial_position src/initial_position.cpp)
 ament_target_dependencies(initial_position rclcpp moveit_core moveit_ros_planning_interface)
 install(TARGETS initial_position DESTINATION lib/${PROJECT_NAME})
 
-add_executable(echo_node src/echo_node.cpp)
-ament_target_dependencies(echo_node rclcpp std_msgs)
-install(TARGETS echo_node DESTINATION lib/${PROJECT_NAME})
-
-add_executable(arm_move src/arm_move.cpp)
-ament_target_dependencies(arm_move rclcpp std_msgs moveit_ros_planning_interface)
-install(TARGETS arm_move DESTINATION lib/${PROJECT_NAME})
-
-add_executable(joint_state_repeater src/joint_state_repeater.cpp)
-ament_target_dependencies(joint_state_repeater rclcpp sensor_msgs)
-install(TARGETS joint_state_repeater DESTINATION lib/${PROJECT_NAME})
+add_executable(initial_position_real src/initial_position_real.cpp)
+ament_target_dependencies(initial_position_real rclcpp moveit_core moveit_ros_planning_interface)
+install(TARGETS initial_position_real DESTINATION lib/${PROJECT_NAME})
 
 add_executable(sim_camera_cal src/sim_camera_cal.cpp)
 ament_target_dependencies(sim_camera_cal
@@ -70,6 +53,19 @@ ament_target_dependencies(sim_camera_cal
 )
 install(TARGETS sim_camera_cal DESTINATION lib/${PROJECT_NAME})
 
+add_executable(real_camera_cal src/real_camera_cal.cpp)
+ament_target_dependencies(real_camera_cal
+  rclcpp
+  sensor_msgs
+  cv_bridge
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  geometry_msgs
+  OpenCV
+)
+install(TARGETS real_camera_cal DESTINATION lib/${PROJECT_NAME})
+
 add_executable(sim_camera_info src/sim_camera_info.cpp)
 ament_target_dependencies(sim_camera_info
   rclcpp
@@ -83,6 +79,19 @@ ament_target_dependencies(sim_camera_info
 )
 install(TARGETS sim_camera_info DESTINATION lib/${PROJECT_NAME})
 
+include_directories(${OpenCV_INCLUDE_DIRS})
+add_executable(sim_camera_pose src/sim_camera_pose.cpp)
+ament_target_dependencies(sim_camera_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs cv_bridge image_transport)
+target_link_libraries(sim_camera_pose ${OpenCV_LIBRARIES})
+install(TARGETS sim_camera_pose
+  DESTINATION lib/${PROJECT_NAME})
+
+include_directories(${OpenCV_INCLUDE_DIRS})
+add_executable(real_camera_pose src/real_camera_pose.cpp)
+ament_target_dependencies(real_camera_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs cv_bridge image_transport)
+target_link_libraries(real_camera_pose ${OpenCV_LIBRARIES})
+install(TARGETS real_camera_pose
+  DESTINATION lib/${PROJECT_NAME})
 
 add_executable(gripper_control_action src/gripper_control_action.cpp)
 ament_target_dependencies(gripper_control_action
@@ -95,19 +104,36 @@ install(TARGETS gripper_control_action DESTINATION lib/${PROJECT_NAME})
 
 
 # 🔹 Add MoveIt2 executable
-# add_executable(move_marker src/move_marker.cpp)
-# ament_target_dependencies(move_marker
-#     ament_cmake
-#     rclcpp
-#     rclcpp_action
-#     moveit_core
-#     moveit_ros_planning_interface
-#     interactive_markers
-#     moveit_ros_planning
-#     moveit_msgs
-#     geometric_shapes
-# )
-# install(TARGETS move_marker DESTINATION lib/${PROJECT_NAME})
+add_executable(move_marker src/move_marker.cpp)
+ament_target_dependencies(move_marker
+    ament_cmake
+    rclcpp
+    rclcpp_action
+    moveit_core
+    moveit_ros_planning_interface
+    interactive_markers
+    moveit_ros_planning
+    moveit_msgs
+    geometric_shapes
+)
+install(TARGETS move_marker DESTINATION lib/${PROJECT_NAME})
+
+add_executable(center_marker src/center_marker.cpp)
+ament_target_dependencies(center_marker
+    ament_cmake
+    rclcpp
+    rclcpp_action
+    moveit_core
+    moveit_ros_planning_interface
+    interactive_markers
+    moveit_ros_planning
+    moveit_msgs
+    geometric_shapes
+	moveit_ros_planning_interface
+)
+install(TARGETS center_marker DESTINATION lib/${PROJECT_NAME})
+
+
 install(DIRECTORY 
     launch
     DESTINATION share/${PROJECT_NAME}

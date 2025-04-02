@@ -7,16 +7,16 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
     moveit_config = MoveItConfigsBuilder("ur3e", package_name="starbot_moveit_config").to_moveit_configs()
 
-    move_marker_node = Node(
+    initial_position_real_node = Node(
         package="ur_transform",
-        executable="teleop_end_effector",
+        executable="initial_position_real",
         output="screen",
         parameters=[
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
             moveit_config.robot_description_kinematics,
-            {"use_sim_time": True},
+            {"use_sim_time": False},
         ],
     )
 
-    return LaunchDescription([move_marker_node])
+    return LaunchDescription([initial_position_real_node])
