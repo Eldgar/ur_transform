@@ -13,6 +13,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(tf2_eigen REQUIRED) 
 
 
 # 🔹 Find MoveIt2 packages
@@ -33,11 +34,11 @@ ament_target_dependencies(real_aruco_transform_publisher rclcpp tf2_ros geometry
 install(TARGETS real_aruco_transform_publisher DESTINATION lib/${PROJECT_NAME})
 
 add_executable(initial_position src/initial_position.cpp)
-ament_target_dependencies(initial_position rclcpp moveit_core moveit_ros_planning_interface)
+ament_target_dependencies(initial_position rclcpp moveit_core moveit_ros_planning_interface geometric_shapes)
 install(TARGETS initial_position DESTINATION lib/${PROJECT_NAME})
 
 add_executable(initial_position_real src/initial_position_real.cpp)
-ament_target_dependencies(initial_position_real rclcpp moveit_core moveit_ros_planning_interface)
+ament_target_dependencies(initial_position_real rclcpp moveit_core moveit_ros_planning_interface geometric_shapes)
 install(TARGETS initial_position_real DESTINATION lib/${PROJECT_NAME})
 
 add_executable(sim_camera_cal src/sim_camera_cal.cpp)
@@ -81,14 +82,14 @@ install(TARGETS sim_camera_info DESTINATION lib/${PROJECT_NAME})
 
 include_directories(${OpenCV_INCLUDE_DIRS})
 add_executable(sim_camera_pose src/sim_camera_pose.cpp)
-ament_target_dependencies(sim_camera_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs cv_bridge image_transport)
+ament_target_dependencies(sim_camera_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs tf2_eigen cv_bridge image_transport)
 target_link_libraries(sim_camera_pose ${OpenCV_LIBRARIES})
 install(TARGETS sim_camera_pose
   DESTINATION lib/${PROJECT_NAME})
 
 include_directories(${OpenCV_INCLUDE_DIRS})
 add_executable(real_camera_pose src/real_camera_pose.cpp)
-ament_target_dependencies(real_camera_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs cv_bridge image_transport)
+ament_target_dependencies(real_camera_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs tf2_eigen cv_bridge image_transport)
 target_link_libraries(real_camera_pose ${OpenCV_LIBRARIES})
 install(TARGETS real_camera_pose
   DESTINATION lib/${PROJECT_NAME})

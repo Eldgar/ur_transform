@@ -75,7 +75,7 @@ private:
 
     std::vector<cv::Mat> detection_frames_;
     std::vector<DistortionResult> best_results_;
-    const int required_detections_ = 3;
+    const int required_detections_ = 5;
 
     void transformCallback(const geometry_msgs::msg::TransformStamped::SharedPtr msg)
     {
@@ -117,11 +117,11 @@ private:
             double best_err = std::numeric_limits<double>::max();
             DistortionResult best_result;
 
-            for (double k1 = -0.3; k1 <= 0.3; k1 += 0.1)
-            for (double k2 = -0.3; k2 <= 0.3; k2 += 0.1)
-            for (double p1 = -0.05; p1 <= 0.05; p1 += 0.05)
-            for (double p2 = -0.05; p2 <= 0.05; p2 += 0.05)
-            for (double k3 = -0.3; k3 <= 0.3; k3 += 0.1)
+            for (double k1 = -0.5; k1 <= 0.5; k1 += 0.1)
+            for (double k2 = -0.5; k2 <= 0.5; k2 += 0.1)
+            for (double p1 = -0.10; p1 <= 0.10; p1 += 0.05)
+            for (double p2 = -0.10; p2 <= 0.10; p2 += 0.05)
+            for (double k3 = -0.5; k3 <= 0.5; k3 += 0.1)
             {
                 cv::Mat dist_coeffs = (cv::Mat_<double>(5, 1) << k1, k2, p1, p2, k3);
                 double err = evaluatePoseError(detection_frames_[i], dist_coeffs);
