@@ -53,8 +53,6 @@ public:
 
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
-        // !! REMOVED CACHING OF MARKER TF !!
-        // No need to wait or cache the base_link -> aruco_link_rotated transform here.
 
         RCLCPP_INFO(this->get_logger(), "ArUco Detector (C++) - Real Robot Initialized.");
     }
@@ -257,9 +255,8 @@ private:
     cv::Ptr<cv::aruco::Dictionary> aruco_dict_;
     cv::Ptr<cv::aruco::DetectorParameters> aruco_params_;
 
-}; // End class ArucoDetectorNode
+};
 
-// --- Main Function (remains the same) ---
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);

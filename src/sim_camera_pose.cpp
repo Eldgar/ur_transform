@@ -162,17 +162,14 @@ private:
         for (size_t i = 1; i < quaternions.size(); ++i) {
             // Ensure quaternions are in the same hemisphere for interpolation
             if (avg_quat.dot(quaternions[i]) < 0.0) {
-                 // Negate one quaternion if dot product is negative
-                 // Note: this modifies the input quaternion for averaging purposes
+
                 quaternions[i] = Eigen::Quaterniond(-quaternions[i].coeffs());
             }
             // Simple incremental averaging (can be improved with more sophisticated methods)
              double factor = 1.0 / (static_cast<double>(i) + 1.0);
              avg_quat = avg_quat.slerp(factor, quaternions[i]); // Use slerp
-            // Or simpler Nlerp (faster but less accurate for large rotations):
-            // avg_quat = Eigen::Quaterniond(avg_quat.coeffs() * (1.0 - factor) + quaternions[i].coeffs() * factor).normalized();
         }
-        avg_quat.normalize(); // Ensure unit quaternion
+        avg_quat.normalize();
 
 
         Eigen::Isometry3d avg_pose = Eigen::Isometry3d::Identity();
@@ -195,14 +192,10 @@ private:
     image_transport::Subscriber image_sub_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     tf2_ros::Buffer tf_buffer_;
-    tf2_ros::TransformListener tf_listener_; // Listener needs the buffer
-
-    // !! REMOVED cached_marker_tf_ !!
-
-    // Use Isometry3d for poses, it's clearer than Matrix4d for transformations
+    tf2_ros::TransformListener tf_listener_;
     std::deque<Eigen::Isometry3d> camera_pose_history_;
 
-}; // End class ArucoDetectorNode
+};
 
 // --- Main Function (remains the same) ---
 int main(int argc, char **argv)

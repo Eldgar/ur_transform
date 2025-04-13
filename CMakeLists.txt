@@ -88,6 +88,13 @@ install(TARGETS sim_camera_pose
   DESTINATION lib/${PROJECT_NAME})
 
 include_directories(${OpenCV_INCLUDE_DIRS})
+add_executable(sim_aruco_pose src/sim_aruco_pose.cpp)
+ament_target_dependencies(sim_aruco_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs tf2_eigen cv_bridge image_transport)
+target_link_libraries(sim_aruco_pose ${OpenCV_LIBRARIES})
+install(TARGETS sim_aruco_pose
+  DESTINATION lib/${PROJECT_NAME})
+
+include_directories(${OpenCV_INCLUDE_DIRS})
 add_executable(real_camera_pose src/real_camera_pose.cpp)
 ament_target_dependencies(real_camera_pose rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs tf2_eigen cv_bridge image_transport)
 target_link_libraries(real_camera_pose ${OpenCV_LIBRARIES})
