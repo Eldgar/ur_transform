@@ -1,3 +1,4 @@
+#include "rclcpp/logging.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "tf2_ros/transform_listener.h"
@@ -73,7 +74,7 @@ private:
       tf_broadcaster_->sendTransform(rotated_tf);
       transform_publisher_->publish(rotated_tf);
 
-      RCLCPP_INFO(this->get_logger(), "Broadcasted transform to aruco_link_rotated.");
+      RCLCPP_DEBUG(this->get_logger(), "Broadcasted transform to aruco_link_rotated.");
     }
     catch (tf2::TransformException &ex)
     {

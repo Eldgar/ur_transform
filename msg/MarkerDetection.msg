@@ -1,0 +1,2 @@
+bool marker_detected
+geometry_msgs/Transform camera_pose_base

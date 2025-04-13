@@ -91,19 +91,68 @@ private:
             size_t i = 0; // Index of the marker to process
 
             //--- 1. Get Marker Pose relative to Camera (T_camera_marker -> T_C_M) ---
-            cv::Mat R_mat;
-            cv::Rodrigues(rvecs[i], R_mat); // Convert Rodrigues vector to rotation matrix
+            // Compute Euclidean distance to marker
+            double marker_distance = std::sqrt(
+                std::pow(tvecs[i][0], 2) +
+                std::pow(tvecs[i][1], 2) +
+                std::pow(tvecs[i][2], 2));
+
+            RCLCPP_DEBUG(this->get_logger(), "Marker distance: %.3f m", marker_distance);
+
             Eigen::Matrix3d R_eigen;
-            // Manual conversion needed as cv::cv2eigen might not handle CV_64F directly depending on version
-            for (int row = 0; row < 3; ++row) {
-                for (int col = 0; col < 3; ++col) {
-                    R_eigen(row, col) = R_mat.at<double>(row, col);
+            Eigen::Vector3d t_eigen;
+            Eigen::Isometry3d T_C_M = Eigen::Isometry3d::Identity();
+
+            // Ignore far markers if we already have a camera pose
+            if (marker_distance > 0.45 && !camera_history_.empty()) {
+                RCLCPP_INFO(this->get_logger(), "Marker detected but too far (%.2f m) ignoring this frame.", marker_distance);
+            } else {
+                // --- Continue with marker processing ---
+
+                cv::Mat R_mat;
+                cv::Rodrigues(rvecs[i], R_mat); // Convert Rodrigues vector to rotation matrix
+                
+                for (int row = 0; row < 3; ++row) {
+                    for (int col = 0; col < 3; ++col) {
+                        R_eigen(row, col) = R_mat.at<double>(row, col);
+                    }
+                }
+
+                t_eigen = Eigen::Vector3d(tvecs[i][0], tvecs[i][1], tvecs[i][2]);
+                T_C_M = Eigen::Isometry3d::Identity();
+
+                T_C_M.linear() = R_eigen;
+                T_C_M.translation() = t_eigen;
+
+                Eigen::Isometry3d T_M_C = T_C_M.inverse();
+
+                geometry_msgs::msg::TransformStamped tf_base_to_marker;
+                Eigen::Isometry3d T_B_M = Eigen::Isometry3d::Identity();
+                bool tf_lookup_success = false;
+                std::string target_frame = "base_link";
+                std::string source_frame = "aruco_link_rotated";
+                try {
+                    tf_base_to_marker = tf_buffer_.lookupTransform(target_frame, source_frame, tf2::TimePointZero);
+                    T_B_M = tf2::transformToEigen(tf_base_to_marker);
+                    tf_lookup_success = true;
+                } catch (const tf2::TransformException &ex) {
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                        "Could not lookup transform from %s to %s: %s",
+                                        target_frame.c_str(), source_frame.c_str(), ex.what());
+                }
+
+                if (tf_lookup_success) {
+                    Eigen::Isometry3d T_B_C = T_B_M * T_M_C;
+                    camera_history_.push_back(T_B_C);
+                    if (camera_history_.size() > 10) {
+                        camera_history_.pop_front();
+                    }
+                    marker_processed_this_frame = true;
+
+                    cv::drawFrameAxes(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5f);
                 }
             }
 
-            Eigen::Vector3d t_eigen(tvecs[i][0], tvecs[i][1], tvecs[i][2]);
-
-            Eigen::Isometry3d T_C_M = Eigen::Isometry3d::Identity(); // Transform Camera <- Marker
             T_C_M.linear() = R_eigen;
             T_C_M.translation() = t_eigen;
 

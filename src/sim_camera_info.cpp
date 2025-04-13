@@ -36,7 +36,7 @@ public:
 
     aruco_dict_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
     aruco_params_ = cv::aruco::DetectorParameters::create();
-    marker_length_ = 0.045; // meters
+    marker_length_ = 0.045;
   }
 
 private:
