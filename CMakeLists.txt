@@ -65,6 +65,8 @@ ament_target_dependencies(real_camera_cal
   tf2_ros
   tf2_geometry_msgs
   geometry_msgs
+  moveit_ros_planning_interface
+  moveit_core
   OpenCV
 )
 install(TARGETS real_camera_cal DESTINATION lib/${PROJECT_NAME})

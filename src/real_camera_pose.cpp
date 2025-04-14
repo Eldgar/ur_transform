@@ -11,7 +11,7 @@
 #include <tf2_eigen/tf2_eigen.hpp>             // Needed for conversions
 #include <Eigen/Geometry>
 #include <deque>
-#include <numeric> // For std::accumulate
+#include <numeric>
 #include <vector>
 
 class ArucoDetectorNode : public rclcpp::Node
@@ -191,7 +191,7 @@ private:
                 // cv::aruco::drawAxis(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5); // Old
                 cv::drawFrameAxes(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5f); // Use drawFrameAxes
             }
-        } // end if(!ids.empty())
+        }
 
         // --- Calculate Average Pose (Improved Method) ---
         Eigen::Isometry3d average_pose_B_C = Eigen::Isometry3d::Identity();
@@ -290,9 +290,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     tf2_ros::Buffer tf_buffer_;
-    tf2_ros::TransformListener tf_listener_; // Listener needs the buffer
-
-    // !! REMOVED cached_marker_tf_ !!
+    tf2_ros::TransformListener tf_listener_;
 
     // Use Isometry3d for poses and history
     std::deque<Eigen::Isometry3d> camera_history_;
