@@ -1,5 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/compressed_image.hpp> // Use CompressedImage
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
@@ -7,12 +7,15 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
 #include <tf2/LinearMath/Quaternion.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp> // Needed for conversions
-#include <tf2_eigen/tf2_eigen.hpp>             // Needed for conversions
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_eigen/tf2_eigen.hpp>
 #include <Eigen/Geometry>
 #include <deque>
 #include <numeric>
 #include <vector>
+#include <image_transport/image_transport.hpp>
+#include <cv_bridge/cv_bridge.h>
+#include <std_msgs/msg/bool.hpp>
 
 class ArucoDetectorNode : public rclcpp::Node
 {
@@ -50,6 +53,10 @@ public:
             "/D415/color/image_raw/compressed", // Make sure this topic name is correct
             rclcpp::SensorDataQoS(), // Use SensorDataQoS for reliability
             std::bind(&ArucoDetectorNode::imageCallback, this, std::placeholders::_1));
+        
+        processed_image_pub_ = image_transport::create_publisher(this, "/aruco_detector/image");
+        found_pub_ = this->create_publisher<std_msgs::msg::Bool>("/aruco_detector/found", 10);
+
 
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
@@ -73,19 +80,78 @@ private:
             return;
         }
 
-        cv::Mat gray;
+        cv::Mat gray, equalized, thresh;
+
+        // === Stage 1: Grayscale
         cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
 
+        // === Stage 2: CLAHE
+        static cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8,8));
+        clahe->apply(gray, equalized);
+
+        // === Stage 3: Gamma correction (modifies equalized in-place)
+        equalized.convertTo(equalized, CV_32F, 1.0 / 255.0);
+        cv::pow(equalized, 0.7, equalized);
+        equalized.convertTo(equalized, CV_8U, 255);
+
+        std::vector<std::pair<std::string, cv::Mat>> stages = {
+            {"gray", gray},
+            {"clahe", gray},
+            {"gamma", equalized},  // after gamma correction
+        };
+
+        // === Marker Detection Loop
         std::vector<int> ids;
+        std::vector<int> detected_ids;
         std::vector<std::vector<cv::Point2f>> corners;
-        cv::aruco::detectMarkers(gray, aruco_dict_, corners, ids, aruco_params_);
+        std::vector<std::vector<cv::Point2f>> detected_corners;
+        cv::Mat detection_input;
+        std::string detection_stage;
+
+        for (const auto& [stage_name, img] : stages)
+        {
+            ids.clear(); corners.clear();
+            cv::aruco::detectMarkers(img, aruco_dict_, corners, ids, aruco_params_);
+
+            if (!ids.empty()) {
+                detection_input = img;
+                detection_stage = stage_name;
+                detected_ids = ids;
+                detected_corners = corners;
+                RCLCPP_INFO(this->get_logger(), "Marker detected on image %s", stage_name.c_str());
+                break;
+            }
+        }
+        cv::Mat debug_img;
+        std_msgs::msg::Bool found_msg;
+        found_msg.data = !ids.empty();
+        found_pub_->publish(found_msg);
+        // === If marker found, display annotated image
+        if (!ids.empty()) {
+            
+            if (detection_input.channels() == 1)
+                cv::cvtColor(detection_input, debug_img, cv::COLOR_GRAY2BGR);
+            else
+                debug_img = detection_input.clone();
+
+            cv::aruco::drawDetectedMarkers(debug_img, corners, ids);
+            cv::imshow("✅ Marker Detected at Stage: " + detection_stage, debug_img);
+            cv::waitKey(1);
+        } else {
+            cv::imshow("❌ No Marker Detected", image);
+            cv::waitKey(1);
+        }
+
+        cv::waitKey(3);  // Required for OpenCV GUI updates
+
 
         bool marker_processed_this_frame = false; // Flag to track if we added a pose this frame
 
-        if (!ids.empty()) {
+       if (!detected_ids.empty()) {
             std::vector<cv::Vec3d> rvecs, tvecs;
             cv::aruco::estimatePoseSingleMarkers(corners, marker_length_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
             cv::aruco::drawDetectedMarkers(image, corners, ids);
+            
 
             // Process the first detected marker (or modify if you need to handle specific IDs)
             size_t i = 0; // Index of the marker to process
@@ -104,7 +170,7 @@ private:
             Eigen::Isometry3d T_C_M = Eigen::Isometry3d::Identity();
 
             // Ignore far markers if we already have a camera pose
-            if (marker_distance > 0.45 && !camera_history_.empty()) {
+            if (marker_distance > 0.47 && !camera_history_.empty()) {
                 RCLCPP_INFO(this->get_logger(), "Marker detected but too far (%.2f m) ignoring this frame.", marker_distance);
             } else {
                 // --- Continue with marker processing ---
@@ -189,11 +255,11 @@ private:
 
                 // Draw coordinate axis for the detected marker in the image
                 // cv::aruco::drawAxis(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5); // Old
-                cv::drawFrameAxes(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5f); // Use drawFrameAxes
+                cv::drawFrameAxes(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5f);
             }
         }
 
-        // --- Calculate Average Pose (Improved Method) ---
+        // --- Calculate Average Pose ---
         Eigen::Isometry3d average_pose_B_C = Eigen::Isometry3d::Identity();
         if (!camera_history_.empty()) {
            average_pose_B_C = calculateAveragePose(camera_history_);
@@ -229,16 +295,17 @@ private:
         tf_msg.transform.rotation = tf2::toMsg(q_avg); // Convert Eigen quaternion to geometry_msgs quaternion
 
         tf_broadcaster_->sendTransform(tf_msg);
-
-        // --- Visualization (Optional) ---
-        // Consider downscaling the image for display if it's large
-        // cv::Mat display_image;
-        // cv::resize(image, display_image, cv::Size(), 0.5, 0.5); // Example: 50% reduction
-        // cv::imshow("Detected Markers", display_image);
         cv::imshow("Detected Markers", image); // Show original size
-        cv::waitKey(1); // Necessary for imshow to refresh
+        cv::waitKey(1);
 
-    } // end imageCallback
+
+        cv_bridge::CvImage out;
+        out.header   = msg->header;
+        out.encoding = sensor_msgs::image_encodings::BGR8;
+        out.image    = image;
+        processed_image_pub_.publish(out.toImageMsg());
+
+    } 
 
     // --- Helper function for averaging poses (more robust method) ---
     Eigen::Isometry3d calculateAveragePose(const std::deque<Eigen::Isometry3d>& poses) {
@@ -291,6 +358,8 @@ private:
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr found_pub_;
+    image_transport::Publisher processed_image_pub_;
 
     // Use Isometry3d for poses and history
     std::deque<Eigen::Isometry3d> camera_history_;
@@ -312,6 +381,7 @@ int main(int argc, char **argv)
     rclcpp::shutdown();
     return 0;
 }
+
 
 
 

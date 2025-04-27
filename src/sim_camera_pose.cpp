@@ -114,7 +114,16 @@ private:
 
             // --- 4. Calculate Camera Pose relative to Base (T_base_camera -> T_B_C) ---
             if (tf_lookup_success) {
-                Eigen::Isometry3d T_B_C = T_B_M * T_M_C; // Base <- Marker <- Camera
+                Eigen::Isometry3d T_B_C = T_B_M * T_M_C;
+
+                geometry_msgs::msg::TransformStamped tf_msg;
+                tf_msg.header.stamp = this->get_clock()->now();
+                tf_msg.header.frame_id = "base_link";  // Parent frame
+                tf_msg.child_frame_id = "camera_link"; // Child frame (computed pose)
+
+                tf_msg.transform = tf2::eigenToTransform(T_B_C).transform;
+                tf_broadcaster_->sendTransform(tf_msg);
+
 
                 // --- Averaging Filter (Optional but recommended) ---
                 camera_pose_history_.push_back(T_B_C);
