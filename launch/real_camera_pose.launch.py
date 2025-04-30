@@ -21,12 +21,12 @@ def generate_launch_description():
             name='collision_objects_loader',
             output='screen'
         ),
-        Node(
-            package='ur_transform',
-            executable='real_aruco_pose',
-            name='real_aruco_pose_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='ur_transform',
+        #     executable='real_aruco_pose',
+        #     name='real_aruco_pose_node',
+        #     output='screen'
+        # ),
         # static transform from rg2_gripper_base_link → center_link
         Node(
             package='tf2_ros',

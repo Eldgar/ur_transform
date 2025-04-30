@@ -25,8 +25,6 @@ public:
         tf_buffer_(this->get_clock()), // Initialize TF buffer
         tf_listener_(tf_buffer_)      // Initialize TF listener using the buffer
     {
-        // Log node initialization, indicating the error calculation method
-        RCLCPP_INFO(this->get_logger(), "Starting ArUco Detector (marker error evaluation using TF lookup for aruco_link_rotated)");
 
         // --- Parameters for Real Robot (D415) ---
         // Camera intrinsic matrix (Updated values)
@@ -57,9 +55,9 @@ public:
             // Bind the callback, ensuring it matches the expected message type
             std::bind(&ArucoDetectorNode::imageCallback, this, std::placeholders::_1));
 
-        // Standard ROS 2 publisher for the processed (raw) image
-        processed_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-            "/aruco_detector/image", 10); // Topic name and QoS depth
+        // ---- in constructor, after subscription creation ----
+        RCLCPP_INFO(get_logger(), "Subscribed to %s",
+                    image_sub_->get_topic_name());
 
     }
 
@@ -68,6 +66,8 @@ private:
     // Callback function now expects CompressedImage message
     void imageCallback(const sensor_msgs::msg::CompressedImage::ConstSharedPtr msg)
     {
+        RCLCPP_DEBUG(get_logger(), "imageCallback() triggered");
+
         cv_bridge::CvImagePtr cv_ptr;
         try {
             // Convert the ROS CompressedImage message to an OpenCV image (BGR8 format)
@@ -92,181 +92,199 @@ private:
         // Convert the image to grayscale for marker detection
         cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
 
-        // --- ArUco Marker Detection ---
-        std::vector<int> ids; // Vector to store IDs of detected markers
-        std::vector<std::vector<cv::Point2f>> corners; // Vector to store corners of detected markers
-        // Detect markers in the grayscale image
-        cv::aruco::detectMarkers(gray, aruco_dict_, corners, ids, aruco_params_);
+        // === Stage 2: CLAHE
+        static cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8,8));
+        cv::Mat equalized;
+        clahe->apply(gray, equalized);
+
+        // === Stage 3: Gamma correction
+        equalized.convertTo(equalized, CV_32F, 1.0 / 255.0);
+        cv::pow(equalized, 0.7, equalized); // gamma < 1 brightens dark regions
+        equalized.convertTo(equalized, CV_8U, 255);
+
+        // Run detection on multiple stages to improve robustness
+        std::vector<std::pair<std::string, cv::Mat>> stages = {
+            {"gray", gray},
+            {"clahe", equalized},
+            {"gamma", equalized}
+        };
+
+        std::vector<int> ids, detected_ids;
+        std::vector<std::vector<cv::Point2f>> corners, detected_corners;
+        cv::Mat detection_input;
+        std::string detection_stage;
+
+        for (const auto &stage : stages) {
+            ids.clear(); corners.clear();
+            cv::aruco::detectMarkers(stage.second, aruco_dict_, corners, ids, aruco_params_);
+            if (!ids.empty()) {
+                detection_input = stage.second;
+                detection_stage = stage.first;
+                detected_ids = ids;
+                detected_corners = corners;
+                // RCLCPP_INFO(this->get_logger(), "Marker detected on %s stage", detection_stage.c_str());
+                break;
+            }
+        }
+
+        if (detected_ids.empty()) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "No markers detected after preprocessing stages");
+            return;
+        }
+
+        // Use the detected set for downstream processing
+        ids = detected_ids;
+        corners = detected_corners;
+        // Provide periodic info log
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                             "detectMarkers (stage %s) found %zu markers", detection_stage.c_str(), ids.size());
 
         // --- Pose Estimation and Error Calculation (if markers detected) ---
-        if (!ids.empty()) {
-            std::vector<cv::Vec3d> rvecs, tvecs; // Vectors for rotation and translation vectors
-            // Estimate the pose of each detected marker relative to the camera
-            cv::aruco::estimatePoseSingleMarkers(corners, marker_length_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
-            // Draw the detected markers on the color image for visualization
-            cv::aruco::drawDetectedMarkers(image, corners, ids);
+        if (ids.empty()) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "No markers detected in current frame");
+            return;           // leave early
+        }
 
-            // --- Process the first detected marker (index 0) ---
-            size_t i = 0; // Index of the marker to process
+        std::vector<cv::Vec3d> rvecs, tvecs; // Vectors for rotation and translation vectors
+        // Estimate the pose of each detected marker relative to the camera
+        cv::aruco::estimatePoseSingleMarkers(corners, marker_length_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
+        // Draw the detected markers on the color image for visualization
+        cv::aruco::drawDetectedMarkers(image, corners, ids);
 
-            // Convert rotation vector (rvecs) to rotation matrix (R_mat) using Rodrigues formula
-            cv::Mat R_mat;
-            cv::Rodrigues(rvecs[i], R_mat);
+        // --- Process the first detected marker (index 0) ---
+        size_t i = 0; // Index of the marker to process
 
-            // Convert OpenCV rotation matrix to Eigen rotation matrix
-            Eigen::Matrix3d R_eigen;
-            for (int row = 0; row < 3; ++row) {
-                for (int col = 0; col < 3; ++col) {
-                    R_eigen(row, col) = R_mat.at<double>(row, col);
-                }
+        // Convert rotation vector (rvecs) to rotation matrix (R_mat) using Rodrigues formula
+        cv::Mat R_mat;
+        cv::Rodrigues(rvecs[i], R_mat);
+
+        // Convert OpenCV rotation matrix to Eigen rotation matrix
+        Eigen::Matrix3d R_eigen;
+        for (int row = 0; row < 3; ++row) {
+            for (int col = 0; col < 3; ++col) {
+                R_eigen(row, col) = R_mat.at<double>(row, col);
             }
-            // Convert OpenCV translation vector to Eigen translation vector
-            Eigen::Vector3d t_eigen(tvecs[i][0], tvecs[i][1], tvecs[i][2]); // Translation: Camera -> Marker
+        }
+        // Convert OpenCV translation vector to Eigen translation vector
+        Eigen::Vector3d t_eigen(tvecs[i][0], tvecs[i][1], tvecs[i][2]); // Translation: Camera -> Marker
 
-            // Create Eigen::Isometry3d transform representing Camera -> Marker (T_C_M)
-            Eigen::Isometry3d T_C_M = Eigen::Isometry3d::Identity();
-            T_C_M.linear() = R_eigen;       // Set rotation part
-            T_C_M.translation() = t_eigen; // Set translation part
+        // Create Eigen::Isometry3d transform representing Camera -> Marker (T_C_M)
+        Eigen::Isometry3d T_C_M = Eigen::Isometry3d::Identity();
+        T_C_M.linear() = R_eigen;       // Set rotation part
+        T_C_M.translation() = t_eigen; // Set translation part
 
-            // --- Publish TF: camera_optical_frame -> aruco_marker_error ---
-            geometry_msgs::msg::TransformStamped tf_camera_to_marker;
-            // Use the timestamp from the incoming image message for consistency
-            tf_camera_to_marker.header.stamp = msg->header.stamp; // Use image timestamp
-            // *** IMPORTANT: Use the correct optical frame for your D415 color camera ***
-            tf_camera_to_marker.header.frame_id = "D415_color_optical_frame"; // Parent frame (Updated)
-            tf_camera_to_marker.child_frame_id = "aruco_marker_error"; // Child frame (detected marker)
+        // --- Publish TF: camera_optical_frame -> aruco_marker_error ---
+        geometry_msgs::msg::TransformStamped tf_camera_to_marker;
+        // Use the timestamp from the incoming image message for consistency
+        tf_camera_to_marker.header.stamp = msg->header.stamp; // Use image timestamp
+        // *** IMPORTANT: Use the correct optical frame for your D415 color camera ***
+        tf_camera_to_marker.header.frame_id = "static_camera_optical_frame"; // Parent frame (Updated)
+        tf_camera_to_marker.child_frame_id = "aruco_marker_error"; // Child frame (detected marker)
 
-            // Set translation
-            tf_camera_to_marker.transform.translation.x = t_eigen.x();
-            tf_camera_to_marker.transform.translation.y = t_eigen.y();
-            tf_camera_to_marker.transform.translation.z = t_eigen.z();
+        // Set translation
+        tf_camera_to_marker.transform.translation.x = t_eigen.x();
+        tf_camera_to_marker.transform.translation.y = t_eigen.y();
+        tf_camera_to_marker.transform.translation.z = t_eigen.z();
 
-            // Convert Eigen rotation matrix to Eigen quaternion
-            Eigen::Quaterniond q_eigen(R_eigen);
-            q_eigen.normalize(); // Ensure it's a unit quaternion
+        // Convert Eigen rotation matrix to Eigen quaternion
+        Eigen::Quaterniond q_eigen(R_eigen);
+        q_eigen.normalize(); // Ensure it's a unit quaternion
 
-            // Set rotation
-            tf_camera_to_marker.transform.rotation.w = q_eigen.w();
-            tf_camera_to_marker.transform.rotation.x = q_eigen.x();
-            tf_camera_to_marker.transform.rotation.y = q_eigen.y();
-            tf_camera_to_marker.transform.rotation.z = q_eigen.z();
+        // Set rotation
+        tf_camera_to_marker.transform.rotation.w = q_eigen.w();
+        tf_camera_to_marker.transform.rotation.x = q_eigen.x();
+        tf_camera_to_marker.transform.rotation.y = q_eigen.y();
+        tf_camera_to_marker.transform.rotation.z = q_eigen.z();
 
-            // Send the transform using the TF broadcaster
-            tf_broadcaster_->sendTransform(tf_camera_to_marker);
-            RCLCPP_DEBUG(this->get_logger(),
-                         "Broadcasted TF %s -> %s",
-                         tf_camera_to_marker.header.frame_id.c_str(),
-                         tf_camera_to_marker.child_frame_id.c_str());
+        // Send the transform using the TF broadcaster
+        tf_broadcaster_->sendTransform(tf_camera_to_marker);
+        RCLCPP_DEBUG(this->get_logger(),
+                     "Broadcasted TF %s -> %s",
+                     tf_camera_to_marker.header.frame_id.c_str(),
+                     tf_camera_to_marker.child_frame_id.c_str());
 
-            // --- Error Calculation using TF Lookups ---
+        // --- Error Calculation using TF Lookups ---
+        try {
+            // Define target and source frames for lookups
+            const std::string target_frame = "base_link";
+            // *** IMPORTANT: Ensure this frame name matches the one used in TF broadcast ***
+            const std::string camera_frame = "static_camera_optical_frame"; // Camera frame (Updated)
+            // We no longer use TF lookup for the marker; name kept for logging only
+            const std::string actual_marker_frame = "aruco_link_rotated";
+
+            // Get the timestamp from the image message (rclcpp::Time)
+            rclcpp::Time image_time = msg->header.stamp;
+            // Define a timeout for TF lookups (rclcpp::Duration)
+            rclcpp::Duration timeout = rclcpp::Duration::from_seconds(0.1);
+
+            // --- Lookup Transform: base_link -> camera_optical_frame ---
+            geometry_msgs::msg::TransformStamped tf_base_to_camera_msg =
+                tf_buffer_.lookupTransform(target_frame, camera_frame, image_time, timeout);
+
+            // --- Convert looked-up transform to Eigen::Isometry3d ---
+            // Base -> Camera
+            const auto& tc = tf_base_to_camera_msg.transform.translation;
+            const auto& rc = tf_base_to_camera_msg.transform.rotation;
+            Eigen::Isometry3d T_base_to_camera = Eigen::Isometry3d::Identity();
+            T_base_to_camera.translation() = Eigen::Vector3d(tc.x, tc.y, tc.z);
+            T_base_to_camera.linear() = Eigen::Quaterniond(rc.w, rc.x, rc.y, rc.z).toRotationMatrix();
+
+            // Pose of detected marker in base frame
+            Eigen::Isometry3d T_base_to_marker = T_base_to_camera * T_C_M;
+
+            // Always log detected pose
+            RCLCPP_INFO(this->get_logger(),
+                        "Detected marker (base frame): x=%.3f  y=%.3f  z=%.3f m",
+                        T_base_to_marker.translation().x(),
+                        T_base_to_marker.translation().y(),
+                        T_base_to_marker.translation().z());
+
+            // --- Optional error calculation vs aruco_link_rotated (if TF exists) ---
             try {
-                // Define target and source frames for lookups
-                const std::string target_frame = "base_link";
-                // *** IMPORTANT: Ensure this frame name matches the one used in TF broadcast ***
-                const std::string camera_frame = "D415_color_optical_frame"; // Camera frame (Updated)
-                const std::string actual_marker_frame = "aruco_link_rotated"; // Ground truth frame (Updated)
+                geometry_msgs::msg::TransformStamped tf_base_to_gt =
+                    tf_buffer_.lookupTransform("base_link", "aruco_link_rotated", image_time, rclcpp::Duration::from_seconds(0.01));
 
-                // Get the timestamp from the image message (rclcpp::Time)
-                rclcpp::Time image_time = msg->header.stamp;
-                // Define a timeout for TF lookups (rclcpp::Duration)
-                rclcpp::Duration timeout = rclcpp::Duration::from_seconds(0.1);
+                Eigen::Isometry3d T_base_to_gt = Eigen::Isometry3d::Identity();
+                T_base_to_gt.translation() = Eigen::Vector3d(tf_base_to_gt.transform.translation.x,
+                                                             tf_base_to_gt.transform.translation.y,
+                                                             tf_base_to_gt.transform.translation.z);
+                T_base_to_gt.linear() = Eigen::Quaterniond(tf_base_to_gt.transform.rotation.w,
+                                                           tf_base_to_gt.transform.rotation.x,
+                                                           tf_base_to_gt.transform.rotation.y,
+                                                           tf_base_to_gt.transform.rotation.z).toRotationMatrix();
 
-                // --- Lookup Transform: base_link -> camera_optical_frame ---
-                geometry_msgs::msg::TransformStamped tf_base_to_camera_msg =
-                    tf_buffer_.lookupTransform(target_frame, camera_frame, image_time, timeout);
+                Eigen::Vector3d err_vec = T_base_to_marker.translation() - T_base_to_gt.translation();
+                double trans_err = err_vec.norm();
+                // Relative percent error w.r.t. distance from camera to marker
+                double cam_distance = t_eigen.norm();
+                double rel_pct = cam_distance > std::numeric_limits<double>::epsilon()*100 ? (trans_err / cam_distance) * 100.0 : 0.0;
 
-                // --- Lookup Transform: base_link -> aruco_link (Actual Pose) ---
-                geometry_msgs::msg::TransformStamped tf_base_to_actual_msg =
-                    tf_buffer_.lookupTransform(target_frame, actual_marker_frame, image_time, timeout);
+                Eigen::Quaterniond q_det(T_base_to_marker.rotation());
+                Eigen::Quaterniond q_gt(T_base_to_gt.rotation());
+                double ang_err = q_det.angularDistance(q_gt);
 
-                // --- Convert looked-up transforms to Eigen::Isometry3d ---
-                // Base -> Camera
-                const auto& tc = tf_base_to_camera_msg.transform.translation;
-                const auto& rc = tf_base_to_camera_msg.transform.rotation;
-                Eigen::Isometry3d T_base_to_camera = Eigen::Isometry3d::Identity();
-                T_base_to_camera.translation() = Eigen::Vector3d(tc.x, tc.y, tc.z);
-                T_base_to_camera.linear() = Eigen::Quaterniond(rc.w, rc.x, rc.y, rc.z).toRotationMatrix();
+                RCLCPP_INFO(this->get_logger(),
+                            "Error vs aruco_link_rotated -> transl: %.3f m (%.2f %%) | orient: %.2f deg",
+                            trans_err,
+                            rel_pct,
+                            ang_err * 180.0 / M_PI);
 
-                // Base -> Actual Marker (Ground Truth)
-                const auto& ta = tf_base_to_actual_msg.transform.translation;
-                const auto& ra = tf_base_to_actual_msg.transform.rotation;
-                Eigen::Isometry3d T_base_to_actual = Eigen::Isometry3d::Identity();
-                T_base_to_actual.translation() = Eigen::Vector3d(ta.x, ta.y, ta.z);
-                T_base_to_actual.linear() = Eigen::Quaterniond(ra.w, ra.x, ra.y, ra.z).toRotationMatrix();
-
-
-                // --- Compute Detected Pose in Base Frame ---
-                // T_base_to_error = T_base_to_camera * T_camera_to_marker(detected)
-                Eigen::Isometry3d T_base_to_error = T_base_to_camera * T_C_M;
-
-                // --- Compute Errors ---
-                // Translation Error: Euclidean distance between translation vectors
-                Eigen::Vector3d err_translation = T_base_to_error.translation() - T_base_to_actual.translation();
-                double translation_error = err_translation.norm(); // Absolute error in meters
-
-                // --- Calculate Relative Translation Error ---
-                // Distance from camera to detected marker
-                double camera_to_marker_dist = t_eigen.norm();
-                double relative_translation_error_percent = 0.0;
-                // Avoid division by zero or very small numbers
-                if (camera_to_marker_dist > std::numeric_limits<double>::epsilon() * 100) { // Check against small threshold
-                     relative_translation_error_percent = (translation_error / camera_to_marker_dist) * 100.0;
-                } else {
-                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, // Warn max once every 5 seconds
-                                         "Detected marker is very close to camera (dist: %.4f m), cannot calculate reliable relative error.", camera_to_marker_dist);
-                    relative_translation_error_percent = std::numeric_limits<double>::infinity(); // Indicate invalid percentage
-                }
-
-
-                // Orientation Error: Angular distance between quaternions
-                Eigen::Quaterniond q_error(T_base_to_error.rotation());
-                Eigen::Quaterniond q_actual(T_base_to_actual.rotation());
-                // Ensure quaternions are normalized before calculating distance
-                q_error.normalize();
-                q_actual.normalize();
-                double angular_error_rad = q_error.angularDistance(q_actual);
-
-                // --- Log the calculated errors ---
-                if (std::isinf(relative_translation_error_percent)) {
-                     RCLCPP_INFO(this->get_logger(),
-                            "BASE-relative error (vs %s) -> Translation: %.4f m (N/A %%) | Orientation: %.4f rad (%.2f deg)",
-                            actual_marker_frame.c_str(),
-                            translation_error,
-                            angular_error_rad,
-                            angular_error_rad * 180.0 / M_PI);
-                } else {
-                     RCLCPP_INFO(this->get_logger(),
-                            "BASE-relative error (vs %s) -> Translation: %.4f m (%.2f %%) | Orientation: %.4f rad (%.2f deg)",
-                            actual_marker_frame.c_str(),
-                            translation_error,
-                            relative_translation_error_percent, // Add percentage here
-                            angular_error_rad,
-                            angular_error_rad * 180.0 / M_PI); // Also log in degrees
-                }
-
-
-            } catch (const tf2::TransformException &ex) {
-                // Log a warning (throttled) if TF lookups fail
-                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, // Log max once every 2 seconds
-                                     "TF lookup failed: %s", ex.what());
+            } catch (const tf2::TransformException &e) {
+                RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                      "Ground-truth TF unavailable: %s", e.what());
             }
 
-            // Draw coordinate axes on the marker for visualization
-            cv::drawFrameAxes(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5f);
-        } // End if (!ids.empty())
+        } catch (const tf2::TransformException &ex) {
+            // Log a warning (throttled) if TF lookups fail
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, // Log max once every 2 seconds
+                                 "TF lookup failed: %s", ex.what());
+        }
 
-        // --- Publish Processed Image ---
-        // Convert the OpenCV image (with drawings) back to a ROS message
-        // Use the header from the original compressed message
-        auto processed_msg = cv_bridge::CvImage(msg->header, "bgr8", image).toImageMsg();
-        // Publish using the standard ROS 2 publisher
-        processed_image_pub_->publish(*processed_msg);
-
-        // --- Display Image (Optional) ---
-        // Can be useful for debugging, but disable for deployment
-        cv::imshow("Detected Markers", image);
-        cv::waitKey(1); // Required for imshow to update
-    }
+        // Draw coordinate axes on the marker for visualization
+        cv::drawFrameAxes(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5f);
+    } // <-- close imageCallback
 
     // --- Class Member Variables ---
     cv::Mat camera_matrix_;
@@ -277,7 +295,6 @@ private:
 
     // Use standard ROS 2 subscriber/publisher pointers
     rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
-    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr processed_image_pub_;
 
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_; // TF broadcaster object
 
@@ -296,5 +313,7 @@ int main(int argc, char **argv)
     rclcpp::shutdown(); // Shutdown ROS 2
     return 0;
 }
+
+
 
 

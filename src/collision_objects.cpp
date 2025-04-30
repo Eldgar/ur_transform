@@ -85,8 +85,8 @@ int main(int argc, char **argv)
     moveit_msgs::msg::CollisionObject c;
     c.id = "C-Clamp";
     c.header.frame_id = "base_link";
-    c.primitives.push_back(make_primitive(0.16, 0.16, 0.16));
-    c.primitive_poses.push_back(make_pose(-0.6, 0.25, -0.05));
+    c.primitives.push_back(make_primitive(0.16, 0.16, 0.20));
+    c.primitive_poses.push_back(make_pose(-0.06, 0.25, -0.05));
     c.operation = c.ADD;
     objs.push_back(c);
   }
