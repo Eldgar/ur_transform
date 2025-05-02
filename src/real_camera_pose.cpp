@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
@@ -16,6 +17,7 @@
 #include <image_transport/image_transport.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64.hpp>
 
 class ArucoDetectorNode : public rclcpp::Node
 {
@@ -56,10 +58,10 @@ public:
         
         processed_image_pub_ = image_transport::create_publisher(this, "/aruco_detector/image");
         found_pub_ = this->create_publisher<std_msgs::msg::Bool>("/aruco_detector/found", 10);
-
+        pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/aruco_detector/pose", 10);
+        distance_pub_ = this->create_publisher<std_msgs::msg::Float64>("/aruco_detector/distance", 10);
 
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
-
 
         RCLCPP_INFO(this->get_logger(), "ArUco Detector (C++) - Real Robot Initialized.");
     }
@@ -156,17 +158,42 @@ private:
             // Process the first detected marker (or modify if you need to handle specific IDs)
             size_t i = 0; // Index of the marker to process
 
-            //--- 1. Get Marker Pose relative to Camera (T_camera_marker -> T_C_M) ---
+            //--- 1. Publish marker pose wrt camera -------------------------------
+            cv::Mat R_mat;
+            cv::Rodrigues(rvecs[i], R_mat);                 // rotation matrix
+
+            Eigen::Matrix3d R_eigen;
+            for (int r = 0; r < 3; ++r)
+              for (int c = 0; c < 3; ++c)
+                R_eigen(r,c) = R_mat.at<double>(r,c);
+
+            Eigen::Quaterniond q_eigen(R_eigen);
+            q_eigen.normalize();
+
+            geometry_msgs::msg::PoseStamped pose_msg;
+            pose_msg.header.stamp    = msg->header.stamp;   // match the image time
+            pose_msg.header.frame_id = "camera_color_optical_frame"; // parent frame
+
+            pose_msg.pose.position.x =  tvecs[i][0];
+            pose_msg.pose.position.y =  tvecs[i][1];
+            pose_msg.pose.position.z =  tvecs[i][2];
+            pose_msg.pose.orientation = tf2::toMsg(q_eigen);
+
+            pose_pub_->publish(pose_msg);
+            // ---------------------------------------------------------------------
+
             // Compute Euclidean distance to marker
             double marker_distance = std::sqrt(
                 std::pow(tvecs[i][0], 2) +
                 std::pow(tvecs[i][1], 2) +
                 std::pow(tvecs[i][2], 2));
 
+            std_msgs::msg::Float64 distance_msg;
+            distance_msg.data = marker_distance;
+            distance_pub_->publish(distance_msg);
+
             RCLCPP_DEBUG(this->get_logger(), "Marker distance: %.3f m", marker_distance);
 
-            Eigen::Matrix3d R_eigen;
-            Eigen::Vector3d t_eigen;
             Eigen::Isometry3d T_C_M = Eigen::Isometry3d::Identity();
 
             // Ignore far markers if we already have a camera pose
@@ -175,20 +202,8 @@ private:
             } else {
                 // --- Continue with marker processing ---
 
-                cv::Mat R_mat;
-                cv::Rodrigues(rvecs[i], R_mat); // Convert Rodrigues vector to rotation matrix
-                
-                for (int row = 0; row < 3; ++row) {
-                    for (int col = 0; col < 3; ++col) {
-                        R_eigen(row, col) = R_mat.at<double>(row, col);
-                    }
-                }
-
-                t_eigen = Eigen::Vector3d(tvecs[i][0], tvecs[i][1], tvecs[i][2]);
-                T_C_M = Eigen::Isometry3d::Identity();
-
-                T_C_M.linear() = R_eigen;
-                T_C_M.translation() = t_eigen;
+                T_C_M.linear() = R_eigen.matrix();
+                T_C_M.translation() = Eigen::Vector3d(tvecs[i][0], tvecs[i][1], tvecs[i][2]);
 
                 Eigen::Isometry3d T_M_C = T_C_M.inverse();
 
@@ -210,7 +225,7 @@ private:
                 if (tf_lookup_success) {
                     Eigen::Isometry3d T_B_C = T_B_M * T_M_C;
                     camera_history_.push_back(T_B_C);
-                    if (camera_history_.size() > 10) {
+                    if (camera_history_.size() > 4) {
                         camera_history_.pop_front();
                     }
                     marker_processed_this_frame = true;
@@ -219,8 +234,8 @@ private:
                 }
             }
 
-            T_C_M.linear() = R_eigen;
-            T_C_M.translation() = t_eigen;
+            T_C_M.linear() = R_eigen.matrix();
+            T_C_M.translation() = Eigen::Vector3d(tvecs[i][0], tvecs[i][1], tvecs[i][2]);
 
             //--- 2. Get Camera Pose relative to Marker (T_marker_camera -> T_M_C) ---
             Eigen::Isometry3d T_M_C = T_C_M.inverse(); // Transform Marker <- Camera
@@ -248,7 +263,7 @@ private:
 
                 // Add to history for averaging
                 camera_history_.push_back(T_B_C);
-                if (camera_history_.size() > 10) { // Keep history size manageable
+                if (camera_history_.size() > 4) { // Keep history size manageable
                      camera_history_.pop_front();
                 }
                 marker_processed_this_frame = true;
@@ -295,6 +310,7 @@ private:
         tf_msg.transform.rotation = tf2::toMsg(q_avg); // Convert Eigen quaternion to geometry_msgs quaternion
 
         tf_broadcaster_->sendTransform(tf_msg);
+        
         cv::imshow("Detected Markers", image); // Show original size
         cv::waitKey(1);
 
@@ -360,6 +376,8 @@ private:
     tf2_ros::TransformListener tf_listener_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr found_pub_;
     image_transport::Publisher processed_image_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr distance_pub_;
 
     // Use Isometry3d for poses and history
     std::deque<Eigen::Isometry3d> camera_history_;

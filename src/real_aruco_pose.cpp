@@ -180,7 +180,7 @@ private:
         // Use the timestamp from the incoming image message for consistency
         tf_camera_to_marker.header.stamp = msg->header.stamp; // Use image timestamp
         // *** IMPORTANT: Use the correct optical frame for your D415 color camera ***
-        tf_camera_to_marker.header.frame_id = "static_camera_optical_frame"; // Parent frame (Updated)
+        tf_camera_to_marker.header.frame_id = "D415_color_optical_frame"; // Parent frame (Updated)
         tf_camera_to_marker.child_frame_id = "aruco_marker_error"; // Child frame (detected marker)
 
         // Set translation
@@ -210,7 +210,7 @@ private:
             // Define target and source frames for lookups
             const std::string target_frame = "base_link";
             // *** IMPORTANT: Ensure this frame name matches the one used in TF broadcast ***
-            const std::string camera_frame = "static_camera_optical_frame"; // Camera frame (Updated)
+            const std::string camera_frame = "D415_color_optical_frame"; // Camera frame (Updated)
             // We no longer use TF lookup for the marker; name kept for logging only
             const std::string actual_marker_frame = "aruco_link_rotated";
 
@@ -271,6 +271,29 @@ private:
                             rel_pct,
                             ang_err * 180.0 / M_PI);
 
+                // --- Broadcast projected base_link_error frame ---
+                {
+                    Eigen::Isometry3d T_marker_gt_to_base = T_base_to_gt.inverse(); // aruco_link_rotated -> base_link
+                    geometry_msgs::msg::TransformStamped tf_markererr_to_baseerr;
+                    tf_markererr_to_baseerr.header.stamp = msg->header.stamp;
+                    tf_markererr_to_baseerr.header.frame_id = "aruco_marker_error"; // parent
+                    tf_markererr_to_baseerr.child_frame_id = "base_link_error";      // child
+
+                    const Eigen::Vector3d &p = T_marker_gt_to_base.translation();
+                    tf_markererr_to_baseerr.transform.translation.x = p.x();
+                    tf_markererr_to_baseerr.transform.translation.y = p.y();
+                    tf_markererr_to_baseerr.transform.translation.z = p.z();
+
+                    Eigen::Quaterniond q(T_marker_gt_to_base.rotation());
+                    q.normalize();
+                    tf_markererr_to_baseerr.transform.rotation.x = q.x();
+                    tf_markererr_to_baseerr.transform.rotation.y = q.y();
+                    tf_markererr_to_baseerr.transform.rotation.z = q.z();
+                    tf_markererr_to_baseerr.transform.rotation.w = q.w();
+
+                    tf_broadcaster_->sendTransform(tf_markererr_to_baseerr);
+                }
+
             } catch (const tf2::TransformException &e) {
                 RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                                       "Ground-truth TF unavailable: %s", e.what());
@@ -284,7 +307,7 @@ private:
 
         // Draw coordinate axes on the marker for visualization
         cv::drawFrameAxes(image, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_length_ * 0.5f);
-    } // <-- close imageCallback
+    }
 
     // --- Class Member Variables ---
     cv::Mat camera_matrix_;
